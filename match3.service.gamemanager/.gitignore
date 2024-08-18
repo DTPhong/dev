@@ -1,0 +1,8 @@
+target/
+.idea
+logs/
+*.iml
+.DS_Store
+app-config.txt
+db-config.txt
+redis-config.txt

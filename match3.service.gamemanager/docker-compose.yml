@@ -1,0 +1,10 @@
+version: "3.7"
+
+services:
+  api:
+    image: match3-api
+    container_name: match3-api-container
+    build: .
+    ports:
+      - "7412:7412"
+    restart: unless-stopped

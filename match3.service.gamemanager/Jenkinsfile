@@ -1,0 +1,284 @@
+#!/usr/bin/env groovy
+pipeline {
+    environment {
+	//google artifact
+    	PROJECT = "match3-424804"
+    	APP_NAME = "match3-api"
+    	REPO_NAME = "match3-api"
+    	REPO_LOCATION = "asia-southeast1"
+    	IMAGE_NAME = "${REPO_LOCATION}-docker.pkg.dev/${PROJECT}/${REPO_NAME}/${APP_NAME}"
+
+	//redis	
+        REDIS_PORT=6379
+        REDIS_HOST="10.145.1.4"
+	REDIS_ACC =credentials('match3-redis')
+
+	//db
+        DB_MATCH3_ACC=credentials('db-match3-account')
+        DB_MATCH3_HOST="10.145.1.4"
+        DB_MATCH3_PORT=3306
+
+	//rabbitmq
+	RABBIT_HOST="10.145.1.5"
+	RABBIT_PORT=5672
+        RABBIT_ACC=credentials('rabbit-acc')
+
+	//GKE
+	GKE_ENPOINT ="35.247.152.20"
+	SERVICE_ACC_GKE = "service-account-gke"
+
+	//dev
+	PROJECT_DEV = "match3-424804"
+    	APP_NAME_DEV = "match3.service.gamemanager"
+    	REPO_NAME_DEV = "dev"
+    	REPO_LOCATION_DEV = "asia-southeast1"
+    	IMAGE_NAME_DEV = "${REPO_LOCATION_DEV}-docker.pkg.dev/${PROJECT_DEV}/${REPO_NAME_DEV}/${APP_NAME_DEV}"
+        
+    }
+    agent {
+        node { label 'master' }
+        
+    }
+
+    options {
+        timeout(time: 1, unit: 'HOURS')
+        retry(0)
+        quietPeriod(0)
+        buildDiscarder(logRotator(numToKeepStr: '30', daysToKeepStr: '90'))
+        timestamps()
+        ansiColor('xterm')
+    }
+
+    parameters {
+        booleanParam(
+            name: 'DEPLOY_PROD',
+            defaultValue: false,
+            description: 'set to true to deploy app to production environments')
+
+	booleanParam(
+            name: 'DEPLOY_DEV',
+            defaultValue: false,
+            description: 'set to true to deploy app to development environments')
+
+	booleanParam(
+            name: 'DEPLOY_TEST',
+            defaultValue: false,
+            description: 'set to true to deploy app to development environments')
+
+        booleanParam(
+            name: 'RESTART_PROJECT',
+            defaultValue: false,
+            description: 'set to true to restart app')
+
+        string(
+            name: 'SERVICE_NAME',
+            defaultValue: 'match3.service.gamemanager',
+            description: '''
+                Please not edit it because this just for read
+            ''')
+
+        string(
+            name: 'DEPLOY_DIR',
+            defaultValue: 'deploy',
+            description: '''
+                Please not edit it because this just for read
+            ''')
+
+        booleanParam(
+            name: 'RESTORE_PROJECT',
+            defaultValue: false,
+            description: 'set to true to restore app - This is just in develop')
+    }
+
+    stages {
+        stage("Prepare workspace") {
+            steps {
+                sh('''#!/bin/bash -e
+                    LATEST_TAG=$(git rev-parse --short HEAD)
+                    # determine release version if input parameter is empty, otherwise use from input
+                    if [[ -z "$RELEASE_VERSION" ]]; then
+                        RELEASE_VERSION="$LATEST_TAG"
+                    fi
+                    echo "$RELEASE_VERSION" > RELEASE_VERSION
+                ''')
+
+                // print build parameters
+                sh('''#!/bin/bash
+                    echo "
+                    GIT_URL:              $GIT_URL
+                    GIT_BRANCH:           $GIT_BRANCH
+                    GIT_COMMIT:           $GIT_COMMIT
+                    SERVICE_NAME:         $SERVICE_NAME
+                    DEPLOY_DIR:           $DEPLOY_DIR
+                    RELEASE_VERSION:      $(cat RELEASE_VERSION)
+                    DEPLOY_PROD:          $DEPLOY_PROD"
+                ''')
+            }
+        }
+
+        stage("Build Prod") {
+            when {
+                branch 'prod'
+                environment name: 'DEPLOY_PROD', value: 'true'
+            }
+            steps {
+                sshagent (credentials: ['JenkinsDeploySSH']) {
+			withCredentials([file(credentialsId: 'gg-service-acc-match3-artifact', variable: 'SERVICE_ACC_ARTIFACT'),
+                 			file(credentialsId: 'gg-service-acc-match3-gke-crt', variable: 'GKE_CRT'),
+					file(credentialsId: 'gg-service-acc-match3-gke', variable: 'SERVICE_ACC_GKE')]) {
+				sh('''#!/bin/bash -e
+   				cp \$SERVICE_ACC_ARTIFACT ./conf/conf.prod/service-account-artifact.json
+				cp \$SERVICE_ACC_GKE ./conf/conf.prod/service-account-gke.json
+				cp \$GKE_CRT ./conf/conf.prod/gke.crt
+				''')
+			}
+                    sh('''#!/bin/bash -e
+			RELEASE_VERSION=$(cat RELEASE_VERSION)
+			echo "=================== Rebuild Service Config ==========================="
+			
+			cp ./conf/conf.prod/template.application.properties ./conf/conf.prod/application.properties.prod
+			cp ./conf/conf.prod/template.development.config.ini ./conf/conf.prod/development.config.ini.prod			
+
+			sed -i "s/{DB_MATCH3_USERNAME}/$DB_MATCH3_ACC_USR/g" ./conf/conf.prod/application.properties.prod
+			sed -i "s/{DB_MATCH3_PASSWORD}/$DB_MATCH3_ACC_PSW/g" ./conf/conf.prod/application.properties.prod
+			sed -i "s/{DB_MATCH3_HOST}/$DB_MATCH3_HOST/g" ./conf/conf.prod/application.properties.prod
+			sed -i "s/{DB_MATCH3_PORT}/$DB_MATCH3_PORT/g" ./conf/conf.prod/application.properties.prod
+			
+			sed -i "s/{RABBIT_HOST}/$RABBIT_HOST/g" ./conf/conf.prod/application.properties.prod
+			sed -i "s/{RABBIT_PORT}/$RABBIT_PORT/g" ./conf/conf.prod/application.properties.prod
+			sed -i "s/{RABBIT_USERNAME}/$RABBIT_ACC_USR/g" ./conf/conf.prod/application.properties.prod
+			sed -i "s/{RABBIT_PASSWORD}/$RABBIT_ACC_PSW/g" ./conf/conf.prod/application.properties.prod
+			
+                        sed -i "s/{REDIS_PORT}/$REDIS_PORT/g" ./conf/conf.prod/application.properties.prod			
+                        sed -i "s/{REDIS_HOST}/$REDIS_HOST/g" ./conf/conf.prod/application.properties.prod
+			sed -i "s/{REDIS_PASS}/$REDIS_ACC_PSW/g" ./conf/conf.prod/application.properties.prod
+			
+
+			sed -i "s/{GKE_ENPOINT}/$GKE_ENPOINT/g" ./conf/conf.prod/development.config.ini.prod
+			sed -i "s/{SERVICE_ACC_GKE}/$SERVICE_ACC_GKE/g" ./conf/conf.prod/development.config.ini.prod
+			echo "=================== [PROD] Build java ==========================="
+			/usr/bin/mvn clean install
+			cp ./target/*.jar ./deploy
+			cp ./target/lib/* ./deploy/lib/
+                        
+			echo "=================== [PROD] Building service $SERVICE_NAME ==================="
+			
+			/usr/bin/rsync --chown=root:root -e "/usr/bin/ssh -o StrictHostKeyChecking=no" -auvz --exclude=".git" --exclude=".gitignore" --exclude="src" --exclude="target" ./ root@10.145.1.5:/blissserver/match3/$SERVICE_NAME/
+			
+			/usr/bin/ssh -o StrictHostKeyChecking=no root@10.145.1.5 "cd /blissserver/match3/$SERVICE_NAME/ && cp ./conf/conf.prod/application.properties.prod ./conf/conf.prod/application.properties && cp ./conf/conf.prod/development.config.ini.prod ./conf/conf.prod/development.config.ini && docker build -t $SERVICE_NAME:$RELEASE_VERSION --no-cache . && cat ./conf/conf.prod/service-account-artifact.json | docker login -u _json_key --password-stdin https://$IMAGE_NAME && docker tag $SERVICE_NAME:$RELEASE_VERSION $IMAGE_NAME:$RELEASE_VERSION && docker push $IMAGE_NAME:$RELEASE_VERSION"
+
+                    ''')
+                }
+            }
+        }
+
+	stage("Build test") {
+            when {
+                branch 'feature/debug'
+                environment name: 'DEPLOY_TEST', value: 'true'
+            }
+            steps {
+                sshagent (credentials: ['JenkinsDeploySSH']) {
+			withCredentials([file(credentialsId: 'gg-service-acc-match3-artifact', variable: 'SERVICE_ACC_ARTIFACT')]) {
+				sh('''#!/bin/bash -e
+   				cp \$SERVICE_ACC_ARTIFACT ./conf/conf.prod/service-account-artifact.json
+				''')
+			}
+                    sh('''#!/bin/bash -e
+			RELEASE_VERSION=$(cat RELEASE_VERSION)
+			
+			echo "=================== [PROD] Build java ==========================="
+			/usr/bin/mvn clean install
+			cp ./target/*.jar ./deploy
+			cp ./target/lib/* ./deploy/lib/
+                        
+			echo "=================== [DEV] Building service $SERVICE_NAME ==================="
+			
+			/usr/bin/rsync --chown=root:root -e "/usr/bin/ssh -o StrictHostKeyChecking=no" -auvz --exclude=".git" --exclude=".gitignore" --exclude="src" --exclude="target" ./ root@10.145.1.26:/blissserver/match3/$SERVICE_NAME/
+			
+			/usr/bin/ssh -o StrictHostKeyChecking=no root@10.145.1.26 "cd /blissserver/match3/$SERVICE_NAME/ && docker build -f ./conf/conf.dev/Dockerfile -t $SERVICE_NAME:$RELEASE_VERSION --no-cache . && cat ./conf/conf.prod/service-account-artifact.json | docker login -u _json_key --password-stdin https://$IMAGE_NAME_DEV && docker tag $SERVICE_NAME:$RELEASE_VERSION $IMAGE_NAME_DEV:$RELEASE_VERSION && docker push $IMAGE_NAME_DEV:$RELEASE_VERSION"
+
+                    ''')
+                }
+            }
+        }
+
+	stage("Build Dev") {
+            when {
+                branch 'dev'
+                environment name: 'DEPLOY_DEV', value: 'true'
+            }
+            steps {
+                sshagent (credentials: ['JenkinsDeploySSH']) {
+			withCredentials([file(credentialsId: 'gg-service-acc-match3-artifact', variable: 'SERVICE_ACC_ARTIFACT')]) {
+				sh('''#!/bin/bash -e
+   				cp \$SERVICE_ACC_ARTIFACT ./conf/conf.prod/service-account-artifact.json
+				''')
+			}
+                    sh('''#!/bin/bash -e
+			RELEASE_VERSION=$(cat RELEASE_VERSION)
+			
+			echo "=================== [PROD] Build java ==========================="
+			/usr/bin/mvn clean install
+			cp ./target/*.jar ./deploy
+			cp ./target/lib/* ./deploy/lib/
+                        
+			echo "=================== [DEV] Building service $SERVICE_NAME ==================="
+			
+			/usr/bin/rsync --chown=root:root -e "/usr/bin/ssh -o StrictHostKeyChecking=no" -auvz --exclude=".git" --exclude=".gitignore" --exclude="src" --exclude="target" ./ root@10.145.1.26:/blissserver/match3/$SERVICE_NAME/
+			
+			/usr/bin/ssh -o StrictHostKeyChecking=no root@10.145.1.26 "cd /blissserver/match3/$SERVICE_NAME/ && docker build -f ./conf/conf.dev/Dockerfile -t $SERVICE_NAME:$RELEASE_VERSION --no-cache . && cat ./conf/conf.prod/service-account-artifact.json | docker login -u _json_key --password-stdin https://$IMAGE_NAME_DEV && docker tag $SERVICE_NAME:$RELEASE_VERSION $IMAGE_NAME_DEV:$RELEASE_VERSION && docker push $IMAGE_NAME_DEV:$RELEASE_VERSION"
+
+                    ''')
+                }
+            }
+        }
+
+	stage("Deploy production") {
+            when {
+                branch 'prod'
+                environment name: 'DEPLOY_PROD', value: 'true'
+            }
+            steps {
+                sshagent (credentials: ['JenkinsDeploySSH']) {
+                    sh('''#!/bin/bash -e
+                        RELEASE_VERSION=$(cat RELEASE_VERSION)
+                        echo "=================== Deploying service $SERVICE_NAME ==================="
+                    ''')
+                }
+            }
+        }
+
+        stage("Restart Project") {
+            when {
+                branch 'prod'
+                environment name: 'RESTART_PROJECT', value: 'true'
+            }
+            steps {
+                sshagent (credentials: ['JenkinsDeploySSH']) {
+                    sh('''#!/bin/bash -e
+                        echo "=================== Restarting service $SERVICE_NAME ==================="
+                    ''')
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            script {
+                if (params.DEPLOY_PROD == true) {
+                    sh('''#!/bin/bash
+                        echo "
+                            SERVICE_NAME:         $SERVICE_NAME
+                            RELEASE_VERSION:      $(cat RELEASE_VERSION)"
+                      ''')
+                }
+            }
+        }
+
+        cleanup {
+            cleanWs()
+        }
+    }
+}

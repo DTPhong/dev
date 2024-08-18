@@ -1,0 +1,43 @@
+#!/bin/bash
+function start() {
+  docker container rm match2.service.gamemanager .
+  docker build --rm -t match2.service.gamemanager .
+  docker run -d --network=host --name  match2.service.gamemanager  match2.service.gamemanager .
+}
+
+function stop() {
+  docker stop match2.service.gamemanager && docker rm match2.service.gamemanager
+}
+
+function restart() {
+  stop
+  start
+  docker logs -f match2.service.gamemanager
+}
+
+function_exists() {
+  declare -f -F $1 > /dev/null
+  return $?
+}
+
+if [ "$UID" -ne 0 ]
+  then echo "Please run as root"
+  exit
+fi
+
+if [ $# -lt 1 ]
+then
+  echo "Usage : $0 start|stop|restart "
+  exit
+fi
+
+case "$1" in
+  start)    function_exists start && start
+          ;;
+  stop)  function_exists stop && stop
+          ;;
+  restart)  function_exists restart && restart
+          ;;
+  *)      echo "Invalid command - Valid->start|stop|restart"
+          ;;
+esac
